@@ -24,6 +24,37 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+// Task Status reported to Coordinator
+type TaskCompletedStatus int
+const (
+	MapTaskCompleted = iota
+	MapTaskFailed
+	ReduceTaskCompleted
+	ReduceTaskFailed
+)
+
+// TaskType replied by Coordinator
+type TaskType int
+const (
+	MapTask = iota
+	ReduceTask
+	Wait
+	Exit
+)
+
+type MessageSend struct {
+	TaskID int
+	TaskCompletedStatus TaskCompletedStatus
+}
+
+type MessageReply struct {
+	TaskID int
+	TaskType TaskType
+	TaskFile string
+	NReduce int
+	NMap int
+}
+
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
