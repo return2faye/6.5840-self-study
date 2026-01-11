@@ -10,3 +10,11 @@ func DPrintf(format string, a ...interface{}) {
 		log.Printf(format, a...)
 	}
 }
+
+type NodeState int8 
+
+const (
+	Follower NodeState = iota
+	Candidate
+	Leader
+)
