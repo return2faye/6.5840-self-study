@@ -201,7 +201,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// reset timer
 	rf.lastHeartbeat = time.Now()
 
-	// args.Term >= rf.currentTerm -> follower
+	// reply.Term >= rf.currentTerm -> follower
 	// safety: one vote in one term
 	if reply.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
