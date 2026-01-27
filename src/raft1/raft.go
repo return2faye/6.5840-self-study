@@ -258,6 +258,76 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) startElection() {
+	rf.mu.Lock()
+	// term++
+	rf.CurrentTerm++
+	electionTerm := rf.CurrentTerm
+	// reset ElectionTimeOut at each new Term
+	rf.electionTimeOut = NewElectionTimeOut()
+	// state transition
+	rf.State = CANDIDATE
+	// vote for itself
+	rf.VotedFor = rf.me
+	args := &RequestVoteArgs{
+		Term: electionTerm,
+		CandidateId: rf.me,
+		// TODO: Fill left parts in later labs
+	}
+	rf.mu.Unlock()
+
+	// include vote from itself
+	voteCounts := 1
+
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+
+		go func (i int)  {
+			reply := &RequestVoteReply{}
+			ok := rf.sendRequestVote(i, args, reply)
+
+			if !ok {
+				return
+			}
+			
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+
+			if electionTerm < reply.Term {
+				rf.CurrentTerm = reply.Term
+				rf.State = FOLLOWER
+				rf.VotedFor = -1
+				return
+			}
+			
+			// Ensure the term hasn't changed since starting this election
+			if rf.CurrentTerm != electionTerm {
+				return
+			}
+
+			// Ensure this server is still a candidate before processing the vote
+			if rf.State != CANDIDATE {
+				return
+			}
+
+			if reply.VoteGranted {
+				voteCounts++
+				// mojority votes
+				if voteCounts > len(rf.peers) / 2 {
+					rf.becomeLeader()
+				}
+				return
+			}
+		}(i)
+	}
+}
+
+func (rf *Raft) becomeLeader() {
+
+}
+
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 
@@ -268,79 +338,10 @@ func (rf *Raft) ticker() {
 		state := rf.State
 		rf.mu.Unlock()
 
-		// timeout
-		if elapsed > rf.electionTimeOut {
-			switch state {
-			// 0. set FOLLOWER -> CANDIDATE: 
-			// 1. Vote itself
-			// 2. increase term
-			// 3. RequestVote to Others
-			case FOLLOWER:
-				rf.mu.Lock()
-				rf.State = CANDIDATE
-				// vote itself
-				rf.VotedFor = rf.me
-				// increase Term at beginning of election
-				rf.CurrentTerm++
-				electionterm := rf.CurrentTerm
-				args := &RequestVoteArgs{
-					Term: rf.CurrentTerm,
-					CandidateId: rf.me,
-					// TODO: fill left parts in later labs
-				}
-				voteCounts := 1
-				rf.mu.Unlock()
 
-				for i := range rf.peers {
-					// skip itself
-					if i == rf.me {
-						continue
-					}
-					go func(i int) {
-						reply := &RequestVoteReply{}
-						// TODO: what to do for unreliable network
-						ok := rf.sendRequestVote(i, args, reply)
-						
-						// valid response
-						if ok {
-							rf.mu.Lock()
-
-							if rf.CurrentTerm < reply.Term {
-								rf.CurrentTerm = reply.Term
-								rf.VotedFor = -1
-								rf.State = FOLLOWER
-								rf.mu.Unlock()
-								return
-							}
-
-							// make sure current state is still CANDIDATE
-							if rf.State != CANDIDATE {
-								rf.mu.Unlock()
-								return
-							}
-
-							// avoid old request
-							if rf.CurrentTerm != electionterm {
-								rf.mu.Unlock()
-								return
-							}
-
-							// granted
-							if reply.VoteGranted {
-								voteCounts++
-								if voteCounts > len(rf.peers) / 2 {
-									rf.State = LEADER
-								}
-								rf.mu.Unlock()
-								return
-							}
-						}
-					}(i)
-				}
-
-			case CANDIDATE:
-			
-			}
+		if (state == FOLLOWER || state == CANDIDATE ) && 
+			elapsed > rf.electionTimeOut {
+			rf.startElection()
 		}
 
 		// pause for a random amount of time between 50 and 350
@@ -368,7 +369,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 	// 300ms - 400ms
-	rf.electionTimeOut = time.Duration(300 + rand.Intn(100)) * time.Millisecond
+	rf.electionTimeOut = NewElectionTimeOut()
 	rf.CurrentTerm = 0
 	rf.VotedFor = -1
 	rf.State = FOLLOWER
