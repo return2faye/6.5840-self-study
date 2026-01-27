@@ -2,6 +2,12 @@ package raft
 
 import "log"
 
+const (
+	FOLLOWER = iota
+	CANDIDATE
+	LEADER
+)
+
 // Debugging
 const Debug = false
 
