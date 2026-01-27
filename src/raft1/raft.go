@@ -143,7 +143,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// reset timer
 	rf.lastHeartbeat = time.Now()
-	rf.electionTimeOut = time.Duration(300 + rand.Intn(100)) * time.Millisecond
+	rf.electionTimeOut = NewElectionTimeOut()
+	rf.VotedFor = -1
 
 	reply.Term = rf.CurrentTerm
 	reply.Success = true
@@ -291,24 +292,26 @@ func (rf *Raft) startElection() {
 			if !ok {
 				return
 			}
-			
+
 			rf.mu.Lock()
-			defer rf.mu.Unlock()
 
 			if electionTerm < reply.Term {
 				rf.CurrentTerm = reply.Term
 				rf.State = FOLLOWER
 				rf.VotedFor = -1
+				rf.mu.Unlock()
 				return
 			}
 			
 			// Ensure the term hasn't changed since starting this election
 			if rf.CurrentTerm != electionTerm {
+				rf.mu.Unlock()
 				return
 			}
 
 			// Ensure this server is still a candidate before processing the vote
 			if rf.State != CANDIDATE {
+				rf.mu.Unlock()
 				return
 			}
 
@@ -316,7 +319,9 @@ func (rf *Raft) startElection() {
 				voteCounts++
 				// mojority votes
 				if voteCounts > len(rf.peers) / 2 {
+					rf.mu.Unlock()
 					rf.becomeLeader()
+					return
 				}
 				return
 			}
@@ -325,7 +330,51 @@ func (rf *Raft) startElection() {
 }
 
 func (rf *Raft) becomeLeader() {
+	rf.mu.Lock()
+	rf.State = LEADER
+	leaderTerm := rf.CurrentTerm
+	// Only one Leader in a Term
+	args := &AppendEntriesArgs{
+		Term: rf.CurrentTerm,
+		LeaderId: rf.me,
+	}
+	rf.mu.Unlock()
 
+	for rf.killed() == false {
+		rf.mu.Lock()
+		if rf.State != LEADER {
+			rf.mu.Unlock()
+			return
+		}
+		rf.mu.Unlock()
+
+		for i := range rf.peers {
+			if i == rf.me {
+				continue
+			}
+
+			go func(i int) {
+				reply := &AppendEntriesReply{}
+				ok := rf.sendAppendEntries(i, args, reply)
+				if !ok {
+					return
+				}
+
+				if leaderTerm < reply.Term {
+					rf.mu.Lock()
+					rf.CurrentTerm = reply.Term
+					rf.State = FOLLOWER
+					rf.VotedFor = -1
+					rf.mu.Unlock()
+					return
+				}
+
+			}(i)
+		}
+
+
+		time.Sleep(time.Duration(100) * time.Millisecond)
+	}
 }
 
 func (rf *Raft) ticker() {
