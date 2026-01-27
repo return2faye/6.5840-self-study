@@ -38,6 +38,11 @@ type Raft struct {
 	log         []LogEntry
 	State       int
 
+	// timeStamp
+	lastHeartbeat time.Time
+	// re-set as new rand value at new term
+	electionTimeOut time.Duration
+
 	// volatile state on all servers
 	CommitIndex int
 	LastApplied int
@@ -128,11 +133,21 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	currentTerm := rf.CurrentTerm
-	rf.mu.Unlock()
+	
 	if args.Term < currentTerm {
 		reply.Term = currentTerm
 		reply.Success = false
+		rf.mu.Unlock()
+		return
 	}
+
+	// reset timer
+	rf.lastHeartbeat = time.Now()
+	rf.electionTimeOut = time.Duration(300 + rand.Intn(100)) * time.Millisecond
+
+	reply.Term = rf.CurrentTerm
+	reply.Success = true
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -248,6 +263,85 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
+		rf.mu.Lock()
+		elapsed := time.Since(rf.lastHeartbeat)
+		state := rf.State
+		rf.mu.Unlock()
+
+		// timeout
+		if elapsed > rf.electionTimeOut {
+			switch state {
+			// 0. set FOLLOWER -> CANDIDATE: 
+			// 1. Vote itself
+			// 2. increase term
+			// 3. RequestVote to Others
+			case FOLLOWER:
+				rf.mu.Lock()
+				rf.State = CANDIDATE
+				// vote itself
+				rf.VotedFor = rf.me
+				// increase Term at beginning of election
+				rf.CurrentTerm++
+				electionterm := rf.CurrentTerm
+				args := &RequestVoteArgs{
+					Term: rf.CurrentTerm,
+					CandidateId: rf.me,
+					// TODO: fill left parts in later labs
+				}
+				voteCounts := 1
+				rf.mu.Unlock()
+
+				for i := range rf.peers {
+					// skip itself
+					if i == rf.me {
+						continue
+					}
+					go func(i int) {
+						reply := &RequestVoteReply{}
+						// TODO: what to do for unreliable network
+						ok := rf.sendRequestVote(i, args, reply)
+						
+						// valid response
+						if ok {
+							rf.mu.Lock()
+
+							if rf.CurrentTerm < reply.Term {
+								rf.CurrentTerm = reply.Term
+								rf.VotedFor = -1
+								rf.State = FOLLOWER
+								rf.mu.Unlock()
+								return
+							}
+
+							// make sure current state is still CANDIDATE
+							if rf.State != CANDIDATE {
+								rf.mu.Unlock()
+								return
+							}
+
+							// avoid old request
+							if rf.CurrentTerm != electionterm {
+								rf.mu.Unlock()
+								return
+							}
+
+							// granted
+							if reply.VoteGranted {
+								voteCounts++
+								if voteCounts > len(rf.peers) / 2 {
+									rf.State = LEADER
+								}
+								rf.mu.Unlock()
+								return
+							}
+						}
+					}(i)
+				}
+
+			case CANDIDATE:
+			
+			}
+		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
@@ -273,6 +367,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	// 300ms - 400ms
+	rf.electionTimeOut = time.Duration(300 + rand.Intn(100)) * time.Millisecond
+	rf.CurrentTerm = 0
+	rf.VotedFor = -1
+	rf.State = FOLLOWER
+	rf.lastHeartbeat = time.Now()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
