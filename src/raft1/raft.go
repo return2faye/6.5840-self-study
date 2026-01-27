@@ -177,12 +177,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	currentTerm := rf.CurrentTerm
-	rf.mu.Unlock()
+
 	// if received smaller term, reply false
 	// each RPC reply should include its current term
 	if args.Term < currentTerm {
 		reply.Term = currentTerm
 		reply.VoteGranted = false
+		rf.mu.Unlock()
+		return
+	}
+
+	// TODO: need to check log
+	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateId{
+		rf.CurrentTerm = args.Term
+		rf.VotedFor = args.CandidateId
+		reply.Term = rf.CurrentTerm
+		reply.VoteGranted = true
+		rf.lastHeartbeat = time.Now()
+		rf.electionTimeOut = NewElectionTimeOut()
+		rf.mu.Unlock()
+		return
 	}
 }
 
