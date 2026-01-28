@@ -319,6 +319,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.log = append(rf.log, newLog)
 	index := len(rf.log) - 1
+	rf.NextIndex[rf.me] = index
+	rf.MatchIndex[rf.me] = index
 	
 
 	return index, term, true
