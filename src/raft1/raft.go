@@ -354,7 +354,7 @@ func (rf *Raft) startElection() {
 				// mojority votes
 				if voteCounts > len(rf.peers) / 2 {
 					rf.mu.Unlock()
-					rf.becomeLeader()
+					go rf.becomeLeader()
 					return
 				}
 			}
@@ -368,6 +368,9 @@ func (rf *Raft) becomeLeader() {
 	rf.mu.Lock()
 	rf.State = LEADER
 	leaderTerm := rf.CurrentTerm
+	// Reinitialize state after election
+	rf.NextIndex = make([]int, 0)
+	rf.MatchIndex = make([]int, 0)
 	// Only one Leader in a Term
 	args := &AppendEntriesArgs{
 		Term: rf.CurrentTerm,
