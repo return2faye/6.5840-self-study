@@ -20,6 +20,8 @@ import (
 )
 
 type LogEntry struct {
+	Command interface{}
+	Term int
 }
 
 // A Go object implementing a single Raft peer.
