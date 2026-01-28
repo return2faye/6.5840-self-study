@@ -52,6 +52,8 @@ type Raft struct {
 	// volatile state on leaders
 	NextIndex  []int
 	MatchIndex []int
+
+	applyCh chan raftapi.ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -556,6 +558,33 @@ func (rf *Raft) ticker() {
 	}
 }
 
+func (rf *Raft) applier() {
+	for rf.killed() == false {
+		rf.mu.Lock()
+		// need to apply commited logs
+		if rf.LastApplied < rf.CommitIndex {
+			nextIndex := rf.LastApplied + 1
+			applyCommand := rf.log[nextIndex].Command
+			rf.LastApplied = nextIndex
+			applyIndex := nextIndex
+			rf.mu.Unlock()
+
+			applyMsg := raftapi.ApplyMsg{
+				CommandValid: true,
+				Command: applyCommand,
+				CommandIndex: applyIndex,
+			}
+
+			rf.applyCh <- applyMsg
+			continue
+		} else {
+			// no log to apply
+			rf.mu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -571,6 +600,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 
 	// Your initialization code here (3A, 3B, 3C).
 	// 300ms - 400ms
@@ -588,6 +618,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go rf.applier()
 
 	return rf
 }
