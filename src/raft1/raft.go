@@ -426,6 +426,8 @@ func (rf *Raft) becomeLeader() {
 		// initialize to be lastIdx + 1 == len(log)
 		rf.NextIndex[i] = lastLogIndex + 1
 	}
+	// update itself
+	rf.MatchIndex[rf.me] = lastLogIndex
 	rf.mu.Unlock()
 
 	for rf.killed() == false {
@@ -497,8 +499,21 @@ func (rf *Raft) becomeLeader() {
 					rf.mu.Lock()
 					rf.MatchIndex[i] = newMatch
 					rf.NextIndex[i] = newMatch + 1
+					for idx := lastLogIndex; idx >= commitIndex+1; idx-- {
+						cnt := 0
+						for p := range rf.peers {
+							if rf.MatchIndex[p] >= idx {
+								cnt++
+							}
+						}
+						// 1. mojority
+						// 2. only commit log of its current term
+						if cnt > len(rf.peers) / 2 && rf.log[idx].Term == term{
+							rf.CommitIndex = idx
+							break
+						}
+					}
 					rf.mu.Unlock()
-					// TODO: commit?
 				}
 
 				if !reply.Success {
