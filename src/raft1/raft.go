@@ -525,7 +525,8 @@ func (rf *Raft) becomeLeader() {
 						// 1. mojority
 						// 2. only commit log of its current term
 						if cnt > len(rf.peers) / 2 && rf.log[idx].Term == term{
-							rf.CommitIndex = idx
+							// prevent roll back
+							rf.CommitIndex = max(rf.CommitIndex, idx)
 							break
 						}
 					}
