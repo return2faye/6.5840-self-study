@@ -487,7 +487,14 @@ func (rf *Raft) becomeLeader() {
 				ok := rf.sendAppendEntries(i, args, reply)
 				
 				// handle reply
-				if !ok {
+				if !ok { return }
+
+				rf.mu.Lock()
+				currTerm := rf.CurrentTerm
+				state := rf.State
+				rf.mu.Unlock()
+
+				if currTerm != args.Term || state != LEADER {
 					return
 				}
 
