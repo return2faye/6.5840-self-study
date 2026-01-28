@@ -230,7 +230,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term == rf.CurrentTerm {
 		// only handle not voted
 		reply.Term = rf.CurrentTerm
-		if rf.VotedFor == -1 {
+		lastIdx := len(rf.log) - 1
+		lastTerm := rf.log[lastIdx].Term
+
+		upToDate := args.LastLogTerm > lastTerm || (args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIdx)
+		// TODO: candidate's log is at least as up-to-date as receiver's log
+		if (rf.VotedFor == -1 || rf.VotedFor == args.CandidateId) && upToDate{
 			// reset timer only when granted vote
 			rf.VotedFor = args.CandidateId
 			rf.lastHeartbeat = time.Now()
@@ -358,10 +363,12 @@ func (rf *Raft) startElection() {
 	rf.State = CANDIDATE
 	// vote for itself
 	rf.VotedFor = rf.me
+	lastIdx :=len(rf.log) - 1
 	args := &RequestVoteArgs{
 		Term: electionTerm,
 		CandidateId: rf.me,
-		// TODO: Fill left parts in later labs
+		LastLogIndex: lastIdx,
+		LastLogTerm: rf.log[lastIdx].Term,
 	}
 	rf.mu.Unlock()
 
