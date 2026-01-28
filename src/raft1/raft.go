@@ -174,16 +174,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(args.Entries) > 0 {
 		for i, e := range args.Entries {
 			idx := args.PrevLogIndex + i + 1
+
 			if idx >= len(rf.log) {
-				rf.log = append(rf.log, e)
-			} else if rf.log[idx].Term != e.Term {
-				// if existing entry conflicts with a new one
-				// (same index but different terms)
-				// delete it and all that follow it
-				rf.log = rf.log[:idx]
-				// append left
 				rf.log = append(rf.log, args.Entries[i:]...)
-				break
+            	break
+			} 
+
+			if rf.log[idx].Term != e.Term {
+				rf.log = rf.log[:idx]
+				rf.log = append(rf.log, args.Entries[i:]...)
+            	break
 			}
 		}
 	}
