@@ -134,23 +134,59 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	currentTerm := rf.CurrentTerm
 	
+	// reply false if term < currentTerm
 	if args.Term < currentTerm {
 		reply.Term = currentTerm
 		reply.Success = false
-		rf.mu.Unlock()
 		return
 	}
 
-	// reset timer
-	rf.lastHeartbeat = time.Now()
-	rf.electionTimeOut = NewElectionTimeOut()
-	rf.VotedFor = -1
+	if args.Term >= currentTerm {
+		rf.CurrentTerm = args.Term
+		rf.State = FOLLOWER
+		rf.VotedFor = -1
+		rf.lastHeartbeat = time.Now()
+		rf.electionTimeOut = NewElectionTimeOut()
+	}
+
+
+	// check prevLogIndex and term
+	// 1. log too short
+	// 2. unmatched prefix
+	if args.PrevLogIndex >= len(rf.log) || 
+	   args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+		reply.Term = rf.CurrentTerm
+		reply.Success = false
+		return
+	}
+
+	// deal with conflicts
+	if len(args.Entries) > 0 {
+		for i, e := range args.Entries {
+			idx := args.PrevLogIndex + i + 1
+			if idx >= len(rf.log) {
+				rf.log = append(rf.log, e)
+			} else if rf.log[idx].Term != e.Term {
+				// if existing entry conflicts with a new one
+				// (same index but different terms)
+				// delete it and all that follow it
+				rf.log = rf.log[:idx]
+				// append left
+				rf.log = append(rf.log, args.Entries[i:]...)
+				break
+			}
+		}
+	}
+
+	if args.LeaderCommit > rf.CommitIndex {
+		rf.CommitIndex = min(args.LeaderCommit, len(rf.log) - 1)
+	}
 
 	reply.Term = rf.CurrentTerm
 	reply.Success = true
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
