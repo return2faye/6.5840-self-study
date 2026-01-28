@@ -503,8 +503,11 @@ func (rf *Raft) becomeLeader() {
 				if reply.Success {
 					newMatch := prevIndex + len(entriesSlice)
 					rf.mu.Lock()
-					rf.MatchIndex[i] = newMatch
-					rf.NextIndex[i] = newMatch + 1
+					if newMatch > rf.MatchIndex[i] {
+						rf.MatchIndex[i] = newMatch
+						rf.NextIndex[i] = newMatch + 1
+					}
+					
 					for idx := lastLogIndex; idx >= commitIndex+1; idx-- {
 						cnt := 0
 						for p := range rf.peers {
