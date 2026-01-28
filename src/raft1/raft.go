@@ -265,14 +265,28 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.State != LEADER {
+		return 0, 0, false
+	}
 
-	return index, term, isLeader
+	term := rf.CurrentTerm
+
+	newLog := LogEntry{
+		Command: command,
+		Term: term,
+	}
+
+	rf.log = append(rf.log, newLog)
+	index := len(rf.log) - 1
+	
+
+	return index, term, true
 }
+
+
 
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
@@ -369,8 +383,12 @@ func (rf *Raft) becomeLeader() {
 	rf.State = LEADER
 	leaderTerm := rf.CurrentTerm
 	// Reinitialize state after election
-	rf.NextIndex = make([]int, 0)
-	rf.MatchIndex = make([]int, 0)
+	rf.NextIndex = make([]int, len(rf.peers))
+	rf.MatchIndex = make([]int, len(rf.peers))
+	for i := 0; i < len(rf.NextIndex); i++ {
+		// initialize to be lastIdx + 1 == len(log)
+		rf.NextIndex[i] = len(rf.log)
+	}
 	// Only one Leader in a Term
 	args := &AppendEntriesArgs{
 		Term: rf.CurrentTerm,
@@ -461,6 +479,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.VotedFor = -1
 	rf.State = FOLLOWER
 	rf.lastHeartbeat = time.Now()
+	// Add Dummy Entry
+	rf.log = []LogEntry{}
+	rf.log = append(rf.log, LogEntry{nil, 0})
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
