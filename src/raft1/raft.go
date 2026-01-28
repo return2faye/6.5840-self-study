@@ -231,40 +231,30 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	// same term
-	if args.Term == rf.CurrentTerm {
-		// only handle not voted
-		reply.Term = rf.CurrentTerm
-		lastIdx := len(rf.log) - 1
-		lastTerm := rf.log[lastIdx].Term
-
-		upToDate := args.LastLogTerm > lastTerm || (args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIdx)
-		// TODO: candidate's log is at least as up-to-date as receiver's log
-		if (rf.VotedFor == -1 || rf.VotedFor == args.CandidateId) && upToDate{
-			// reset timer only when granted vote
-			rf.VotedFor = args.CandidateId
-			rf.lastHeartbeat = time.Now()
-			rf.electionTimeOut = NewElectionTimeOut()
-			rf.State = FOLLOWER
-			reply.VoteGranted = true
-		} else {
-			reply.VoteGranted = false
-		}
-		return
-	}
-
-	// rf has smaller term: 
-	// restart Follower 
 	if args.Term > rf.CurrentTerm {
 		rf.CurrentTerm = args.Term
 		rf.State = FOLLOWER
 		rf.VotedFor = -1
-		reply.Term = rf.CurrentTerm
+	}
 
-		// TODO: Add logs check
+
+	reply.Term = rf.CurrentTerm
+	lastIdx := len(rf.log) - 1
+	lastTerm := rf.log[lastIdx].Term
+
+	isLogUpToDate := args.LastLogTerm > lastTerm || 
+		(args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIdx)
+
+	// candidate's log is at least as up-to-date as receiver's log
+	if (rf.VotedFor == -1 || rf.VotedFor == args.CandidateId) && isLogUpToDate{
+		// reset timer only when granted vote
 		rf.VotedFor = args.CandidateId
+		rf.lastHeartbeat = time.Now()
+		rf.electionTimeOut = NewElectionTimeOut()
+		rf.State = FOLLOWER
 		reply.VoteGranted = true
-		return
+	} else {
+		reply.VoteGranted = false
 	}
 }
 
