@@ -381,18 +381,14 @@ func (rf *Raft) startElection() {
 func (rf *Raft) becomeLeader() {
 	rf.mu.Lock()
 	rf.State = LEADER
-	leaderTerm := rf.CurrentTerm
 	// Reinitialize state after election
 	rf.NextIndex = make([]int, len(rf.peers))
+	// for each server, initialize to 0
 	rf.MatchIndex = make([]int, len(rf.peers))
+	lastLogIndex := len(rf.log) - 1
 	for i := 0; i < len(rf.NextIndex); i++ {
 		// initialize to be lastIdx + 1 == len(log)
-		rf.NextIndex[i] = len(rf.log)
-	}
-	// Only one Leader in a Term
-	args := &AppendEntriesArgs{
-		Term: rf.CurrentTerm,
-		LeaderId: rf.me,
+		rf.NextIndex[i] = lastLogIndex + 1
 	}
 	rf.mu.Unlock()
 
@@ -410,19 +406,72 @@ func (rf *Raft) becomeLeader() {
 			}
 
 			go func(i int) {
+				// make sure still Leader
+				rf.mu.Lock()
+				if rf.State != LEADER {
+					rf.mu.Unlock()
+					return
+				}
+				// get snapshot
+				term := rf.CurrentTerm
+				leaderID := rf.me
+				commitIndex := rf.CommitIndex
+				lastLogIndex := len(rf.log) - 1
+				next := rf.NextIndex[i]
+				prevIndex := next - 1
+				preTerm := rf.log[prevIndex].Term
+				
+				// append entries only when peers fall behind
+				var entriesSlice []LogEntry
+				if next <= lastLogIndex {
+					entriesSlice = rf.log[next : lastLogIndex + 1]
+				} 
+
+				rf.mu.Unlock()
+
+				args := &AppendEntriesArgs{
+					Term: term,
+					LeaderId: leaderID,
+					PrevLogIndex: prevIndex,
+					PrevLogTerm: preTerm,
+					Entries: entriesSlice,
+					LeaderCommit: commitIndex,
+				}
+
 				reply := &AppendEntriesReply{}
+				// TODO: how to resend indefinitly until success
 				ok := rf.sendAppendEntries(i, args, reply)
+				
+				// handle reply
 				if !ok {
 					return
 				}
 
-				if leaderTerm < reply.Term {
+				if reply.Term > term {
 					rf.mu.Lock()
 					rf.CurrentTerm = reply.Term
 					rf.State = FOLLOWER
 					rf.VotedFor = -1
 					rf.mu.Unlock()
 					return
+				}
+
+				if reply.Success {
+					newMatch := prevIndex + len(entriesSlice)
+					rf.mu.Lock()
+					rf.MatchIndex[i] = newMatch
+					rf.NextIndex[i] = newMatch + 1
+					rf.mu.Unlock()
+					// TODO: commit?
+				}
+
+				if !reply.Success {
+					// TODO: Currently simply roll back, need conflict improvement
+					rf.mu.Lock()
+					if rf.NextIndex[i] > 1 {
+						rf.NextIndex[i] -= 1
+					}
+					rf.mu.Unlock()
 				}
 
 			}(i)
