@@ -146,7 +146,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if args.Term >= currentTerm {
+	if args.Term == currentTerm {
+		rf.State = FOLLOWER
+	}
+
+	// only reset voteFor when received bigger term
+	if args.Term > currentTerm {
 		rf.CurrentTerm = args.Term
 		rf.State = FOLLOWER
 		rf.VotedFor = -1
