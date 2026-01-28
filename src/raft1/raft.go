@@ -176,26 +176,44 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
-	currentTerm := rf.CurrentTerm
+	defer rf.mu.Unlock()
 
 	// if received smaller term, reply false
 	// each RPC reply should include its current term
-	if args.Term < currentTerm {
-		reply.Term = currentTerm
+	if args.Term < rf.CurrentTerm {
+		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
-		rf.mu.Unlock()
 		return
 	}
 
-	// TODO: need to check log
-	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateId{
-		rf.CurrentTerm = args.Term
-		rf.VotedFor = args.CandidateId
+	// same term
+	if args.Term == rf.CurrentTerm {
+		// only handle not voted
 		reply.Term = rf.CurrentTerm
+		if rf.VotedFor == -1 {
+			// reset timer only when granted vote
+			rf.VotedFor = args.CandidateId
+			rf.lastHeartbeat = time.Now()
+			rf.electionTimeOut = NewElectionTimeOut()
+			rf.State = FOLLOWER
+			reply.VoteGranted = true
+		} else {
+			reply.VoteGranted = false
+		}
+		return
+	}
+
+	// rf has smaller term: 
+	// restart Follower 
+	if args.Term > rf.CurrentTerm {
+		rf.CurrentTerm = args.Term
+		rf.State = FOLLOWER
+		rf.VotedFor = -1
+		reply.Term = rf.CurrentTerm
+
+		// TODO: Add logs check
+		rf.VotedFor = args.CandidateId
 		reply.VoteGranted = true
-		rf.lastHeartbeat = time.Now()
-		rf.electionTimeOut = NewElectionTimeOut()
-		rf.mu.Unlock()
 		return
 	}
 }
@@ -337,8 +355,9 @@ func (rf *Raft) startElection() {
 					rf.becomeLeader()
 					return
 				}
-				return
 			}
+
+			rf.mu.Unlock()
 		}(i)
 	}
 }
