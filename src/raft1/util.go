@@ -16,6 +16,13 @@ func NewElectionTimeOut() time.Duration {
 	return time.Duration(300 + rand.Intn(100)) * time.Millisecond
 }
 
+// generate copy of slice from start to the end
+func generateEntrySlice(start int, origin []LogEntry) []LogEntry {
+	new := []LogEntry{}
+	copy(new, origin[start:])
+	return new
+}
+
 // Debugging
 const Debug = false
 
