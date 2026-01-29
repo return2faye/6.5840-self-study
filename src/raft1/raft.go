@@ -544,10 +544,17 @@ func (rf *Raft) becomeLeader() {
 				}
 
 				if !reply.Success {
-					// TODO: Currently simply roll back, need conflict improvement
+					// Avoid Blind Decrement
 					rf.mu.Lock()
-					if rf.NextIndex[i] > 1 {
-						rf.NextIndex[i] -= 1
+					// only roll back when NextIndex not modified
+					// avoid old RPC override new success statues
+					// !!! Idempotency Check
+					if rf.NextIndex[i] == args.PrevLogIndex + 1 {
+						// TODO: simple implementation, rollback one, modify in later labs
+						rf.NextIndex[i] = args.PrevLogIndex
+						if rf.NextIndex[i] < 1 {
+							rf.NextIndex[i] = 1
+						}
 					}
 					rf.mu.Unlock()
 				}
