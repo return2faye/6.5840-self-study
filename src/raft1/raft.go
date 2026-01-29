@@ -438,8 +438,6 @@ func (rf *Raft) becomeLeader() {
 		// initialize to be lastIdx + 1 == len(log)
 		rf.NextIndex[i] = lastLogIndex + 1
 	}
-	// update itself
-	rf.MatchIndex[rf.me] = lastLogIndex
 	rf.mu.Unlock()
 
 	for rf.killed() == false {
@@ -550,7 +548,8 @@ func (rf *Raft) becomeLeader() {
 					// avoid old RPC override new success statues
 					// !!! Idempotency Check
 					if rf.NextIndex[i] == args.PrevLogIndex + 1 {
-						// TODO: simple implementation, rollback one, modify in later labs
+						// TODO: simple implementation, rollback one, 
+						// won't work if too many logs behind
 						rf.NextIndex[i] = args.PrevLogIndex
 						if rf.NextIndex[i] < 1 {
 							rf.NextIndex[i] = 1
