@@ -309,7 +309,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.State != LEADER {
-		return 0, 0, false
+		return -1, -1, false
 	}
 
 	term := rf.CurrentTerm
@@ -318,10 +318,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 		Term: term,
 	}
-
 	rf.log = append(rf.log, newLog)
+
 	index := len(rf.log) - 1
-	rf.NextIndex[rf.me] = index
+	rf.NextIndex[rf.me] = index + 1
 	rf.MatchIndex[rf.me] = index
 	
 
