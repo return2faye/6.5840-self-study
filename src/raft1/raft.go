@@ -188,8 +188,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 
+	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.CommitIndex {
-		rf.CommitIndex = min(args.LeaderCommit, len(rf.log) - 1)
+		matchIndex := args.PrevLogIndex + len(args.Entries)
+		rf.CommitIndex = min(args.LeaderCommit, matchIndex)
 	}
 
 	reply.Term = rf.CurrentTerm
