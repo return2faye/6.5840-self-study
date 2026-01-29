@@ -162,7 +162,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// check prevLogIndex and term
 	// 1. log too short
-	// 2. unmatched prefix
+	// 2. if exist, term must match
 	if args.PrevLogIndex >= len(rf.log) || 
 	   args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
 		reply.Term = rf.CurrentTerm
@@ -175,6 +175,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		for i, e := range args.Entries {
 			idx := args.PrevLogIndex + i + 1
 
+			// append any new entries not already in the log
 			if idx >= len(rf.log) {
 				rf.log = append(rf.log, args.Entries[i:]...)
             	break
@@ -190,8 +191,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.CommitIndex {
-		matchIndex := args.PrevLogIndex + len(args.Entries)
-		rf.CommitIndex = min(args.LeaderCommit, matchIndex)
+		rf.CommitIndex = min(args.LeaderCommit, len(rf.log) - 1)
 	}
 
 	reply.Term = rf.CurrentTerm
@@ -441,6 +441,7 @@ func (rf *Raft) becomeLeader() {
 	rf.mu.Unlock()
 
 	for rf.killed() == false {
+		// make sure still being Leader
 		rf.mu.Lock()
 		if rf.State != LEADER {
 			rf.mu.Unlock()
