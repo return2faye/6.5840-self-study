@@ -148,6 +148,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Term == currentTerm {
 		rf.State = FOLLOWER
+		rf.lastHeartbeat = time.Now()
+		rf.electionTimeOut = NewElectionTimeOut()
 	}
 
 	// only reset voteFor when received bigger term
@@ -244,6 +246,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	lastIdx := len(rf.log) - 1
 	lastTerm := rf.log[lastIdx].Term
 
+	// 1. different terms: later term win
+	// 2. same terms: longer logs win
 	isLogUpToDate := args.LastLogTerm > lastTerm || 
 		(args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIdx)
 
