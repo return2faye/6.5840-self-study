@@ -368,7 +368,9 @@ func (rf *Raft) startElection() {
 	rf.mu.Unlock()
 
 	// include vote from itself
+	var voteMu sync.Mutex
 	voteCounts := 1
+	finished := false
 
 	for i := range rf.peers {
 		if i == rf.me {
@@ -384,42 +386,44 @@ func (rf *Raft) startElection() {
 			}
 
 			rf.mu.Lock()
+			defer rf.mu.Unlock()
 
 			if electionTerm < reply.Term {
 				rf.CurrentTerm = reply.Term
 				rf.State = FOLLOWER
 				rf.VotedFor = -1
-				rf.mu.Unlock()
 				return
 			}
 			
 			// Ensure the term hasn't changed since starting this election
 			if rf.CurrentTerm != electionTerm {
-				rf.mu.Unlock()
 				return
 			}
 
 			// Ensure this server is still a candidate before processing the vote
 			if rf.State != CANDIDATE {
-				rf.mu.Unlock()
 				return
 			}
 
 			if reply.VoteGranted {
+				voteMu.Lock()
 				voteCounts++
 				// mojority votes
-				if voteCounts > len(rf.peers) / 2 {
-					rf.mu.Unlock()
+				if !finished && voteCounts > len(rf.peers) / 2 {
+					finished = true
+					voteMu.Unlock()
 					go rf.becomeLeader()
 					return
+				} else {
+					voteMu.Unlock()
 				}
 			}
-
-			rf.mu.Unlock()
 		}(i)
 	}
 }
 
+
+// called only once within one term
 func (rf *Raft) becomeLeader() {
 	rf.mu.Lock()
 	rf.State = LEADER
