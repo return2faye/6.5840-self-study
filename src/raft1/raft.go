@@ -89,18 +89,6 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 	var CurrentTerm int
@@ -212,6 +200,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.CurrentTerm
 	reply.Success = true
+
+	rf.persist()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -275,6 +265,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else {
 		reply.VoteGranted = false
 	}
+
+	rf.persist()
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -340,6 +332,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := len(rf.Log) - 1
 	rf.NextIndex[rf.me] = index + 1
 	rf.MatchIndex[rf.me] = index
+
+	rf.persist()
 
 	return index, term, true
 }
@@ -408,6 +402,7 @@ func (rf *Raft) startElection() {
 				rf.CurrentTerm = reply.Term
 				rf.State = FOLLOWER
 				rf.VotedFor = -1
+				rf.persist()
 				return
 			}
 
@@ -527,6 +522,7 @@ func (rf *Raft) becomeLeader() {
 					rf.CurrentTerm = reply.Term
 					rf.State = FOLLOWER
 					rf.VotedFor = -1
+					rf.persist()
 					rf.mu.Unlock()
 					return
 				}
