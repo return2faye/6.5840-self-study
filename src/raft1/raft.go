@@ -472,10 +472,14 @@ func (rf *Raft) becomeLeader() {
 				preTerm := rf.log[prevIndex].Term
 				
 				// append entries only when peers fall behind
+				// !!!: use deep copies
 				var entriesSlice []LogEntry
 				if next <= lastLogIndex {
-					entriesSlice = rf.log[next : lastLogIndex + 1]
-				} 
+					entriesSlice = make([]LogEntry, lastLogIndex - next + 1)
+					copy(entriesSlice, rf.log[next:lastLogIndex+1])
+				} else {
+					entriesSlice = []LogEntry{}
+				}
 
 				rf.mu.Unlock()
 
