@@ -135,6 +135,10 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+	// rejection Message
+	XTerm   int
+	XIndex  int
+	XLen    int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -149,49 +153,63 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if args.Term == currentTerm {
-		rf.State = FOLLOWER
-		rf.lastHeartbeat = time.Now()
-		rf.electionTimeOut = NewElectionTimeOut()
-	}
-
 	// only reset voteFor when received bigger term
 	if args.Term > currentTerm {
 		rf.CurrentTerm = args.Term
 		rf.State = FOLLOWER
 		rf.VotedFor = -1
-		rf.lastHeartbeat = time.Now()
-		rf.electionTimeOut = NewElectionTimeOut()
 	}
 
-	// check prevLogIndex and term
-	// 1. log too short
-	// 2. if exist, term must match
-	if args.PrevLogIndex >= len(rf.Log) ||
-		args.PrevLogTerm != rf.Log[args.PrevLogIndex].Term {
+	rf.State = FOLLOWER
+	rf.lastHeartbeat = time.Now()
+	rf.electionTimeOut = NewElectionTimeOut()
+	
+
+	// ---------- Handling Logs ----------------
+
+	logLength := len(rf.Log)
+
+	// Case 3: Log Too Short
+	if args.PrevLogIndex >= logLength {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
+		reply.XLen = logLength
 		return
 	}
 
-	// deal with conflicts
-	if len(args.Entries) > 0 {
-		for i, e := range args.Entries {
-			idx := args.PrevLogIndex + i + 1
+	// Case 1 & 2 : Term Mismatch
+	if	rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Term = rf.CurrentTerm
+		reply.Success = false
+		reply.XTerm = rf.Log[args.PrevLogIndex].Term
 
-			// append any new entries not already in the log
-			if idx >= len(rf.Log) {
-				rf.Log = append(rf.Log, args.Entries[i:]...)
-				break
-			}
+		idx := args.PrevLogIndex
+		for idx > 0 && rf.Log[idx - 1].Term == reply.XTerm {
+			idx--
+		}
+		reply.XIndex = idx
+		return
+	}
 
-			if rf.Log[idx].Term != e.Term {
-				rf.Log = rf.Log[:idx]
-				rf.Log = append(rf.Log, args.Entries[i:]...)
-				break
-			}
+	// success == true
+
+	// Truncate & Append
+	for i, e := range args.Entries {
+		idx := args.PrevLogIndex + i + 1
+
+		// append any new entries not already in the log
+		if idx >= len(rf.Log) {
+			rf.Log = append(rf.Log, args.Entries[i:]...)
+			break
+		}
+
+		if rf.Log[idx].Term != e.Term {
+			rf.Log = rf.Log[:idx]
+			rf.Log = append(rf.Log, args.Entries[i:]...)
+			break
 		}
 	}
+
 
 	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.CommitIndex {
@@ -556,15 +574,32 @@ func (rf *Raft) becomeLeader() {
 				if !reply.Success {
 					// Avoid Blind Decrement
 					rf.mu.Lock()
-					// only roll back when NextIndex not modified
-					// avoid old RPC override new success statues
-					// !!! Idempotency Check
-					if rf.NextIndex[i] == args.PrevLogIndex+1 {
-						// TODO: simple implementation, rollback one,
-						// won't work if too many logs behind
-						rf.NextIndex[i] = args.PrevLogIndex
-						if rf.NextIndex[i] < 1 {
-							rf.NextIndex[i] = 1
+					// Idempotency check
+					if args.PrevLogIndex + 1 != rf.NextIndex[i] {
+						rf.mu.Unlock()
+						return
+					}
+					// Case 3: Log too short
+					if reply.XLen != 0 {
+						rf.NextIndex[i] = reply.XLen
+					} else {
+						lastLogWithXTerm := -1
+						for idx := len(rf.Log) - 1; idx >= 1; idx-- {
+							if rf.Log[idx].Term == reply.XTerm {
+								lastLogWithXTerm = idx
+								break
+							}
+
+							if rf.Log[idx].Term < reply.XTerm {
+								break
+							}
+						}
+						// Case 2: Leader has XTerm
+						if lastLogWithXTerm != -1 {
+							rf.NextIndex[i] = lastLogWithXTerm + 1
+						} else {
+							// Case 1: Leader doesn't have XTerm
+							rf.NextIndex[i] = reply.XIndex
 						}
 					}
 					rf.mu.Unlock()
