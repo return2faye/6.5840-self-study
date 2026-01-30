@@ -47,10 +47,10 @@ type Raft struct {
 	electionTimeOut time.Duration
 
 	// volatile state on all servers
-	CommitIndex int
-	LastApplied int
+	CommitIndex       int
+	LastApplied       int
 	LastIncludedIndex int
-	LastIncludedTerm int
+	LastIncludedTerm  int
 
 	// volatile state on leaders
 	NextIndex  []int
@@ -106,7 +106,6 @@ func (rf *Raft) persist() {
 	e.Encode(rf.LastIncludedTerm)
 	raftstate := w.Bytes()
 
-
 	rf.persister.Save(raftstate, rf.persister.ReadSnapshot())
 }
 
@@ -125,7 +124,7 @@ func (rf *Raft) readPersist(data []byte) {
 	var LastIncludedTerm int
 
 	if d.Decode(&CurrentTerm) != nil || d.Decode(&VotedFor) != nil || d.Decode(&Log) != nil ||
-		d.Decode(&LastIncludedIndex) != nil || d.Decode(&LastIncludedTerm) != nil{
+		d.Decode(&LastIncludedIndex) != nil || d.Decode(&LastIncludedTerm) != nil {
 		// TODO: handle Decode Error
 		return
 	} else {
@@ -164,15 +163,15 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	// truncate logs
 	offset := index - rf.LastIncludedIndex
-	rf.LastIncludedTerm = rf.Log[index - rf.LastIncludedIndex].Term
+	rf.LastIncludedTerm = rf.Log[index-rf.LastIncludedIndex].Term
 	rf.LastIncludedIndex = index
 
 	newLog := make([]LogEntry, 0, len(rf.Log)-offset)
 	// add dummy => keep 9-index
 	newLog = append(newLog, LogEntry{nil, rf.LastIncludedTerm})
-    newLog = append(newLog, rf.Log[offset+1:]...)
-    
-    rf.Log = newLog
+	newLog = append(newLog, rf.Log[offset+1:]...)
+
+	rf.Log = newLog
 
 	// persist
 	w := new(bytes.Buffer)
@@ -188,11 +187,11 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 type InstallSnapshotArgs struct {
-	Term int
-	LeaderID int
+	Term              int
+	LeaderID          int
 	LastIncludedIndex int
-	LastIncludedTerm int
-	Data []byte
+	LastIncludedTerm  int
+	Data              []byte
 }
 
 type InstallSnapshotReply struct {
@@ -257,18 +256,18 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.CurrentTerm)
-    e.Encode(rf.VotedFor)
-    e.Encode(rf.Log)
-    e.Encode(rf.LastIncludedIndex)
-    e.Encode(rf.LastIncludedTerm)
-    raftstate := w.Bytes()
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.Log)
+	e.Encode(rf.LastIncludedIndex)
+	e.Encode(rf.LastIncludedTerm)
+	raftstate := w.Bytes()
 
 	rf.persister.Save(raftstate, args.Data)
 
 	msg := raftapi.ApplyMsg{
 		SnapshotValid: true,
-		Snapshot: args.Data,
-		SnapshotTerm: args.LastIncludedTerm,
+		Snapshot:      args.Data,
+		SnapshotTerm:  args.LastIncludedTerm,
 		SnapshotIndex: args.LastIncludedIndex,
 	}
 	rf.mu.Unlock()
@@ -296,9 +295,9 @@ type AppendEntriesReply struct {
 	Term    int
 	Success bool
 	// rejection Message
-	XTerm   int
-	XIndex  int
-	XLen    int
+	XTerm  int
+	XIndex int
+	XLen   int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -323,7 +322,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.State = FOLLOWER
 	rf.lastHeartbeat = time.Now()
 	rf.electionTimeOut = NewElectionTimeOut()
-	
 
 	// ---------- Handling Logs ----------------
 
@@ -652,10 +650,50 @@ func (rf *Raft) becomeLeader() {
 				commitIndex := rf.CommitIndex
 				lastLogIndex := rf.lastLogIndex()
 				next := rf.NextIndex[i]
-				prevIndex := next - 1
-				preTerm := rf.getLogTerm(prevIndex)
+
+				if next <= rf.LastIncludedIndex {
+					installArgs := &InstallSnapshotArgs{
+						Term:              term,
+						LeaderID:          leaderID,
+						LastIncludedIndex: rf.LastIncludedIndex,
+						LastIncludedTerm:  rf.LastIncludedTerm,
+						Data:              rf.persister.ReadSnapshot(),
+					}
+					lastIncludedIndex := rf.LastIncludedIndex
+					rf.mu.Unlock()
+
+					installReply := &InstallSnapshotReply{}
+					ok := rf.sendInstallSnapshot(i, installArgs, installReply)
+					if !ok {
+						return
+					}
+
+					rf.mu.Lock()
+					currTerm := rf.CurrentTerm
+					state := rf.State
+					rf.mu.Unlock()
+					if currTerm != term || state != LEADER {
+						return
+					}
+					if installReply.Term > term {
+						rf.mu.Lock()
+						rf.CurrentTerm = installReply.Term
+						rf.State = FOLLOWER
+						rf.VotedFor = -1
+						rf.persist()
+						rf.mu.Unlock()
+						return
+					}
+					rf.mu.Lock()
+					rf.NextIndex[i] = lastIncludedIndex + 1
+					rf.MatchIndex[i] = lastIncludedIndex
+					rf.mu.Unlock()
+					return
+				}
 
 				// append entries only when peers fall behind
+				prevIndex := next - 1
+				preTerm := rf.getLogTerm(prevIndex)
 				// !!!: use deep copies
 				var entriesSlice []LogEntry
 				if next <= lastLogIndex {
@@ -712,7 +750,7 @@ func (rf *Raft) becomeLeader() {
 						rf.NextIndex[i] = newMatch + 1
 					}
 
-					for idx := lastLogIndex; idx >= commitIndex+1; idx-- {
+					for idx := lastLogIndex; idx >= max(commitIndex+1, rf.LastIncludedIndex+1); idx-- {
 						cnt := 0
 						for p := range rf.peers {
 							if rf.MatchIndex[p] >= idx {
@@ -734,7 +772,7 @@ func (rf *Raft) becomeLeader() {
 					// Avoid Blind Decrement
 					rf.mu.Lock()
 					// Idempotency check
-					if args.PrevLogIndex + 1 != rf.NextIndex[i] {
+					if args.PrevLogIndex+1 != rf.NextIndex[i] {
 						rf.mu.Unlock()
 						return
 					}
@@ -798,6 +836,12 @@ func (rf *Raft) applier() {
 		// need to apply commited logs
 		if rf.LastApplied < rf.CommitIndex {
 			nextIndex := rf.LastApplied + 1
+			// entries with index <= LastIncludedIndex are in snapshot; skip (avoid getLogEntry underflow)
+			if nextIndex <= rf.LastIncludedIndex {
+				rf.LastApplied = rf.LastIncludedIndex
+				rf.mu.Unlock()
+				continue
+			}
 			applyCommand := rf.getLogEntry(nextIndex).Command
 			rf.LastApplied = nextIndex
 			applyIndex := nextIndex
