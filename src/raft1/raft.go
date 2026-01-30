@@ -187,6 +187,100 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.persister.Save(raftstate, snapshot)
 }
 
+type InstallSnapshotArgs struct {
+	Term int
+	LeaderID int
+	LastIncludedIndex int
+	LastIncludedTerm int
+	Data []byte
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+
+	// Reply Immediately if term < currentTerm
+	if args.Term < rf.CurrentTerm {
+		reply.Term = rf.CurrentTerm
+		rf.mu.Unlock()
+		return
+	}
+
+	if args.Term > rf.CurrentTerm {
+		rf.CurrentTerm = args.Term
+		rf.VotedFor = -1
+	}
+
+	rf.State = FOLLOWER
+	rf.lastHeartbeat = time.Now()
+	rf.electionTimeOut = NewElectionTimeOut()
+
+	if args.LastIncludedIndex <= rf.LastIncludedIndex {
+		rf.mu.Unlock()
+		return
+	}
+
+	exist := false
+
+	indexInLog := args.LastIncludedIndex - rf.LastIncludedIndex
+	// >= since first dummy holds last included
+	if indexInLog < len(rf.Log) && indexInLog >= 0 {
+		if rf.Log[indexInLog].Term == args.LastIncludedTerm {
+			exist = true
+		}
+	}
+
+	// discard all logs
+	if !exist {
+		rf.Log = make([]LogEntry, 1)
+		rf.Log[0].Term = args.LastIncludedTerm
+	} else {
+		suffix := rf.Log[indexInLog:]
+		newLog := make([]LogEntry, len(suffix))
+		copy(newLog, suffix)
+		rf.Log = newLog
+	}
+
+	rf.LastIncludedIndex = args.LastIncludedIndex
+	rf.LastIncludedTerm = args.LastIncludedTerm
+
+	if rf.CommitIndex < args.LastIncludedIndex {
+		rf.CommitIndex = args.LastIncludedIndex
+	}
+	if rf.LastApplied < args.LastIncludedIndex {
+		rf.LastApplied = args.LastIncludedIndex
+	}
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+    e.Encode(rf.VotedFor)
+    e.Encode(rf.Log)
+    e.Encode(rf.LastIncludedIndex)
+    e.Encode(rf.LastIncludedTerm)
+    raftstate := w.Bytes()
+
+	rf.persister.Save(raftstate, args.Data)
+
+	msg := raftapi.ApplyMsg{
+		SnapshotValid: true,
+		Snapshot: args.Data,
+		SnapshotTerm: args.LastIncludedTerm,
+		SnapshotIndex: args.LastIncludedIndex,
+	}
+	rf.mu.Unlock()
+
+	rf.applyCh <- msg
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type AppendEntriesArgs struct {
