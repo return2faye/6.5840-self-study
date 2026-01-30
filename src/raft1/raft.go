@@ -67,6 +67,27 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.CurrentTerm, rf.State == LEADER
 }
 
+// lastLogIndex returns the log index of the last entry. Caller must hold rf.mu.
+func (rf *Raft) lastLogIndex() int {
+	return rf.LastIncludedIndex + len(rf.Log) - 1
+}
+
+// getLogTerm returns the term at log index k. Caller must hold rf.mu.
+func (rf *Raft) getLogTerm(k int) int {
+	if k == rf.LastIncludedIndex {
+		return rf.LastIncludedTerm
+	}
+	return rf.Log[k-rf.LastIncludedIndex].Term
+}
+
+// getLogEntry returns the entry at log index k. Caller must hold rf.mu.
+func (rf *Raft) getLogEntry(k int) LogEntry {
+	if k == rf.LastIncludedIndex {
+		return LogEntry{nil, rf.LastIncludedTerm}
+	}
+	return rf.Log[k-rf.LastIncludedIndex]
+}
+
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
@@ -212,24 +233,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// ---------- Handling Logs ----------------
 
-	logLength := len(rf.Log)
+	lastIdx := rf.lastLogIndex()
 
-	// Case 3: Log Too Short
-	if args.PrevLogIndex >= logLength {
+	// Case 3: Log Too Short (PrevLogIndex not in our log range)
+	if args.PrevLogIndex > lastIdx || args.PrevLogIndex < rf.LastIncludedIndex {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
-		reply.XLen = logLength
+		reply.XLen = lastIdx + 1
 		return
 	}
 
 	// Case 1 & 2 : Term Mismatch
-	if	rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if rf.getLogTerm(args.PrevLogIndex) != args.PrevLogTerm {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
-		reply.XTerm = rf.Log[args.PrevLogIndex].Term
+		reply.XTerm = rf.getLogTerm(args.PrevLogIndex)
 
 		idx := args.PrevLogIndex
-		for idx > 0 && rf.Log[idx - 1].Term == reply.XTerm {
+		for idx > rf.LastIncludedIndex && rf.getLogTerm(idx-1) == reply.XTerm {
 			idx--
 		}
 		reply.XIndex = idx
@@ -243,22 +264,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		idx := args.PrevLogIndex + i + 1
 
 		// append any new entries not already in the log
-		if idx >= len(rf.Log) {
+		if idx > lastIdx {
 			rf.Log = append(rf.Log, args.Entries[i:]...)
 			break
 		}
 
-		if rf.Log[idx].Term != e.Term {
-			rf.Log = rf.Log[:idx]
+		if rf.getLogTerm(idx) != e.Term {
+			rf.Log = rf.Log[:idx-rf.LastIncludedIndex]
 			rf.Log = append(rf.Log, args.Entries[i:]...)
 			break
 		}
 	}
 
-
 	// min(leaderCommit, index of last new entry)
 	if args.LeaderCommit > rf.CommitIndex {
-		rf.CommitIndex = min(args.LeaderCommit, len(rf.Log)-1)
+		rf.CommitIndex = min(args.LeaderCommit, rf.lastLogIndex())
 	}
 
 	reply.Term = rf.CurrentTerm
@@ -309,8 +329,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	reply.Term = rf.CurrentTerm
-	lastIdx := len(rf.Log) - 1
-	lastTerm := rf.Log[lastIdx].Term
+	lastIdx := rf.lastLogIndex()
+	lastTerm := rf.getLogTerm(lastIdx)
 
 	// 1. different terms: later term win
 	// 2. same terms: longer logs win
@@ -392,7 +412,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.Log = append(rf.Log, newLog)
 
-	index := len(rf.Log) - 1
+	index := rf.lastLogIndex()
 	rf.NextIndex[rf.me] = index + 1
 	rf.MatchIndex[rf.me] = index
 
@@ -431,12 +451,12 @@ func (rf *Raft) startElection() {
 	rf.State = CANDIDATE
 	// vote for itself
 	rf.VotedFor = rf.me
-	lastIdx := len(rf.Log) - 1
+	lastIdx := rf.lastLogIndex()
 	args := &RequestVoteArgs{
 		Term:         electionTerm,
 		CandidateId:  rf.me,
 		LastLogIndex: lastIdx,
-		LastLogTerm:  rf.Log[lastIdx].Term,
+		LastLogTerm:  rf.getLogTerm(lastIdx),
 	}
 	rf.mu.Unlock()
 
@@ -504,7 +524,7 @@ func (rf *Raft) becomeLeader() {
 	rf.NextIndex = make([]int, len(rf.peers))
 	// for each server, initialize to 0
 	rf.MatchIndex = make([]int, len(rf.peers))
-	lastLogIndex := len(rf.Log) - 1
+	lastLogIndex := rf.lastLogIndex()
 	for i := 0; i < len(rf.NextIndex); i++ {
 		// initialize to be lastIdx + 1 == len(log)
 		rf.NextIndex[i] = lastLogIndex + 1
@@ -536,17 +556,17 @@ func (rf *Raft) becomeLeader() {
 				term := rf.CurrentTerm
 				leaderID := rf.me
 				commitIndex := rf.CommitIndex
-				lastLogIndex := len(rf.Log) - 1
+				lastLogIndex := rf.lastLogIndex()
 				next := rf.NextIndex[i]
 				prevIndex := next - 1
-				preTerm := rf.Log[prevIndex].Term
+				preTerm := rf.getLogTerm(prevIndex)
 
 				// append entries only when peers fall behind
 				// !!!: use deep copies
 				var entriesSlice []LogEntry
 				if next <= lastLogIndex {
 					entriesSlice = make([]LogEntry, lastLogIndex-next+1)
-					copy(entriesSlice, rf.Log[next:lastLogIndex+1])
+					copy(entriesSlice, rf.Log[next-rf.LastIncludedIndex:lastLogIndex-rf.LastIncludedIndex+1])
 				} else {
 					entriesSlice = []LogEntry{}
 				}
@@ -607,7 +627,7 @@ func (rf *Raft) becomeLeader() {
 						}
 						// 1. mojority
 						// 2. only commit log of its current term
-						if cnt > len(rf.peers)/2 && rf.Log[idx].Term == term {
+						if cnt > len(rf.peers)/2 && rf.getLogTerm(idx) == term {
 							// prevent roll back
 							rf.CommitIndex = max(rf.CommitIndex, idx)
 							break
@@ -629,13 +649,12 @@ func (rf *Raft) becomeLeader() {
 						rf.NextIndex[i] = reply.XLen
 					} else {
 						lastLogWithXTerm := -1
-						for idx := len(rf.Log) - 1; idx >= 1; idx-- {
-							if rf.Log[idx].Term == reply.XTerm {
+						for idx := rf.lastLogIndex(); idx >= rf.LastIncludedIndex+1; idx-- {
+							if rf.getLogTerm(idx) == reply.XTerm {
 								lastLogWithXTerm = idx
 								break
 							}
-
-							if rf.Log[idx].Term < reply.XTerm {
+							if rf.getLogTerm(idx) < reply.XTerm {
 								break
 							}
 						}
@@ -685,7 +704,7 @@ func (rf *Raft) applier() {
 		// need to apply commited logs
 		if rf.LastApplied < rf.CommitIndex {
 			nextIndex := rf.LastApplied + 1
-			applyCommand := rf.Log[nextIndex].Command
+			applyCommand := rf.getLogEntry(nextIndex).Command
 			rf.LastApplied = nextIndex
 			applyIndex := nextIndex
 			rf.mu.Unlock()
