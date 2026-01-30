@@ -49,6 +49,8 @@ type Raft struct {
 	// volatile state on all servers
 	CommitIndex int
 	LastApplied int
+	LastIncludedIndex int
+	LastIncludedTerm int
 
 	// volatile state on leaders
 	NextIndex  []int
@@ -79,8 +81,12 @@ func (rf *Raft) persist() {
 	e.Encode(rf.CurrentTerm)
 	e.Encode(rf.VotedFor)
 	e.Encode(rf.Log)
+	e.Encode(rf.LastIncludedIndex)
+	e.Encode(rf.LastIncludedTerm)
 	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
+
+
+	rf.persister.Save(raftstate, rf.persister.ReadSnapshot())
 }
 
 // restore previously persisted state.
@@ -94,14 +100,19 @@ func (rf *Raft) readPersist(data []byte) {
 	var CurrentTerm int
 	var VotedFor int
 	var Log []LogEntry
+	var LastIncludedIndex int
+	var LastIncludedTerm int
 
-	if d.Decode(&CurrentTerm) != nil || d.Decode(&VotedFor) != nil || d.Decode(&Log) != nil {
+	if d.Decode(&CurrentTerm) != nil || d.Decode(&VotedFor) != nil || d.Decode(&Log) != nil ||
+		d.Decode(&LastIncludedIndex) != nil || d.Decode(&LastIncludedTerm) != nil{
 		// TODO: handle Decode Error
 		return
 	} else {
 		rf.CurrentTerm = CurrentTerm
 		rf.VotedFor = VotedFor
 		rf.Log = Log
+		rf.LastIncludedIndex = LastIncludedIndex
+		rf.LastIncludedTerm = LastIncludedTerm
 	}
 }
 
@@ -117,8 +128,42 @@ func (rf *Raft) PersistBytes() int {
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// Your code here (3D).
+	// discard request if index <= LastIncludedIndex
+	if index <= rf.LastIncludedIndex {
+		return
+	}
 
+	// discard request if index > committedIndex
+	if index > rf.CommitIndex {
+		return
+	}
+
+	// truncate logs
+	offset := index - rf.LastIncludedIndex
+	rf.LastIncludedTerm = rf.Log[index - rf.LastIncludedIndex].Term
+	rf.LastIncludedIndex = index
+
+	newLog := make([]LogEntry, 0, len(rf.Log)-offset)
+	// add dummy => keep 9-index
+	newLog = append(newLog, LogEntry{nil, rf.LastIncludedTerm})
+    newLog = append(newLog, rf.Log[offset+1:]...)
+    
+    rf.Log = newLog
+
+	// persist
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.Log)
+	e.Encode(rf.LastIncludedIndex)
+	e.Encode(rf.LastIncludedTerm)
+	raftstate := w.Bytes()
+
+	rf.persister.Save(raftstate, snapshot)
 }
 
 // example RequestVote RPC arguments structure.
