@@ -8,6 +8,8 @@ import (
 	"6.5840/tester1"
 )
 
+const maxRetries = 3 // after this many consecutive !ok to same server, try next (avoids dead loop if server killed)
+
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
@@ -32,6 +34,7 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
+	retries := 0
 	for {
 		ck.mu.Lock()
 		i := ck.leader
@@ -47,10 +50,21 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 			ck.mu.Unlock()
 			return reply.Value, reply.Version, reply.Err
 		}
-		// Wrong leader or RPC failure: try next server
-		ck.mu.Lock()
-		ck.leader = (ck.leader + 1) % len(ck.servers)
-		ck.mu.Unlock()
+		if ok && reply.Err == rpc.ErrWrongLeader {
+			ck.mu.Lock()
+			ck.leader = (ck.leader + 1) % len(ck.servers)
+			ck.mu.Unlock()
+			retries = 0
+			continue
+		}
+		// !ok: transient failure or server dead; after maxRetries try next server
+		retries++
+		if retries >= maxRetries {
+			ck.mu.Lock()
+			ck.leader = (ck.leader + 1) % len(ck.servers)
+			ck.mu.Unlock()
+			retries = 0
+		}
 	}
 }
 
@@ -73,6 +87,7 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	rpcsSent := 0
+	retries := 0
 	for {
 		rpcsSent++
 		ck.mu.Lock()
@@ -87,7 +102,18 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		var reply rpc.PutReply
 		ok := ck.clnt.Call(ck.servers[i], "KVServer.Put", &args, &reply)
 
-		if !ok || reply.Err == rpc.ErrWrongLeader {
+		if !ok {
+			retries++
+			if retries >= maxRetries {
+				ck.mu.Lock()
+				ck.leader = (ck.leader + 1) % len(ck.servers)
+				ck.mu.Unlock()
+				retries = 0
+			}
+			continue
+		}
+		retries = 0
+		if reply.Err == rpc.ErrWrongLeader {
 			ck.mu.Lock()
 			ck.leader = (ck.leader + 1) % len(ck.servers)
 			ck.mu.Unlock()

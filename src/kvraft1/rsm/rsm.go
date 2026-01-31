@@ -1,7 +1,6 @@
 package rsm
 
 import (
-	"reflect"
 	"sync"
 	"time"
 
@@ -10,7 +9,6 @@ import (
 	"6.5840/raft1"
 	"6.5840/raftapi"
 	"6.5840/tester1"
-
 )
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
@@ -44,6 +42,7 @@ type RSM struct {
 	applyCh      chan raftapi.ApplyMsg
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
+	nextId       int // unique op id per Submit (avoids DeepEqual on Req after encode/decode)
 	// index -> waiter: only send result if applied op matches submitted op
 	pending map[int]struct {
 		ch chan any
@@ -94,8 +93,8 @@ func (rsm *RSM) applier() {
 				delete(rsm.pending, msg.CommandIndex)
 			}
 			rsm.mu.Unlock()
-			// only send result if the applied command is the one this Submit submitted
-			if ok && reflect.DeepEqual(entry.op, appliedOp) {
+			// Match by Id/Me only; Req may differ after labgob encode/decode (pointer vs value).
+			if ok && entry.op.Id == appliedOp.Id && entry.op.Me == appliedOp.Me {
 				entry.ch <- result
 			}
 		}
@@ -114,10 +113,11 @@ func (rsm *RSM) Raft() raftapi.Raft {
 func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 	// Submit creates an Op structure to run a command through Raft;
-	// for example: op := Op{Me: rsm.me, Id: id, Req: req}, where req
-	// is the argument to Submit and id is a unique id for the op.
-
-	op := Op{Req: req}
+	// Id+Me identify this op after encode/decode (DeepEqual on Req can fail).
+	rsm.mu.Lock()
+	rsm.nextId++
+	op := Op{Id: rsm.nextId, Me: rsm.me, Req: req}
+	rsm.mu.Unlock()
 	index, startTerm, isLeader := rsm.rf.Start(op)
 	if !isLeader {
 		return rpc.ErrWrongLeader, nil
