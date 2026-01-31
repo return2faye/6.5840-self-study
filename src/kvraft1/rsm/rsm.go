@@ -14,10 +14,12 @@ import (
 var useRaftStateMachine bool // to plug in another raft besided raft1
 
 
+// Op is the command replicated through Raft. Req is the actual operation
+// (e.g. Inc{}, Null{}) that the state machine will execute in DoOp(Req).
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	Id int
+	Req any // the request to execute; must be a registered labgob type
+	Me int
 }
 
 
@@ -40,7 +42,8 @@ type RSM struct {
 	applyCh      chan raftapi.ApplyMsg
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
-	// Your definitions here.
+	// index -> channel to send DoOp result to the waiting Submit
+	pending map[int]chan any
 }
 
 // servers[] contains the ports of the set of
@@ -64,11 +67,34 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
+		pending:      make(map[int]chan any),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
+	go rsm.applier()
 	return rsm
+}
+
+// applier reads committed entries from applyCh and applies them to the state machine.
+// Exits when applyCh is closed (e.g. after Raft Kill()).
+func (rsm *RSM) applier() {
+	for msg := range rsm.applyCh {
+		if msg.CommandValid {
+			op := msg.Command.(Op)
+			result := rsm.sm.DoOp(op.Req)
+			rsm.mu.Lock()
+			ch, ok := rsm.pending[msg.CommandIndex]
+			if ok {
+				delete(rsm.pending, msg.CommandIndex)
+			}
+			rsm.mu.Unlock()
+			if ok {
+				ch <- result
+			}
+		}
+		// SnapshotValid (4C): handle later
+	}
 }
 
 func (rsm *RSM) Raft() raftapi.Raft {
@@ -85,6 +111,20 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// for example: op := Op{Me: rsm.me, Id: id, Req: req}, where req
 	// is the argument to Submit and id is a unique id for the op.
 
-	// your code here
-	return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	op := Op{Req: req}
+	index, _, isLeader := rsm.rf.Start(op)
+	if !isLeader {
+		return rpc.ErrWrongLeader, nil
+	}
+
+	ch := make(chan any, 1)
+	rsm.mu.Lock()
+	rsm.pending[index] = ch
+	rsm.mu.Unlock()
+
+	result := <-ch
+	rsm.mu.Lock()
+	delete(rsm.pending, index)
+	rsm.mu.Unlock()
+	return rpc.OK, result
 }
