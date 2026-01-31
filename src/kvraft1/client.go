@@ -1,16 +1,18 @@
 package kvraft
 
 import (
+	"sync"
+
 	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/tester1"
 )
 
-
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
-	// You will have to modify this struct.
+	mu      sync.Mutex
+	leader  int // hint: last server that successfully handled a request
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
@@ -30,9 +32,26 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
+	for {
+		ck.mu.Lock()
+		i := ck.leader
+		ck.mu.Unlock()
 
-	// You will have to modify this function.
-	return "", 0, ""
+		args := rpc.GetArgs{Key: key}
+		var reply rpc.GetReply
+		ok := ck.clnt.Call(ck.servers[i], "KVServer.Get", &args, &reply)
+
+		if ok && (reply.Err == rpc.OK || reply.Err == rpc.ErrNoKey) {
+			ck.mu.Lock()
+			ck.leader = i
+			ck.mu.Unlock()
+			return reply.Value, reply.Version, reply.Err
+		}
+		// Wrong leader or RPC failure: try next server
+		ck.mu.Lock()
+		ck.leader = (ck.leader + 1) % len(ck.servers)
+		ck.mu.Unlock()
+	}
 }
 
 // Put updates key with value only if the version in the
@@ -53,6 +72,40 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
-	// You will have to modify this function.
-	return ""
+	rpcsSent := 0
+	for {
+		rpcsSent++
+		ck.mu.Lock()
+		i := ck.leader
+		ck.mu.Unlock()
+
+		args := rpc.PutArgs{
+			Key:     key,
+			Value:   value,
+			Version: version,
+		}
+		var reply rpc.PutReply
+		ok := ck.clnt.Call(ck.servers[i], "KVServer.Put", &args, &reply)
+
+		if !ok || reply.Err == rpc.ErrWrongLeader {
+			ck.mu.Lock()
+			ck.leader = (ck.leader + 1) % len(ck.servers)
+			ck.mu.Unlock()
+			continue
+		}
+
+		// Got a definitive response from the leader (OK or ErrVersion)
+		if reply.Err == rpc.OK {
+			ck.mu.Lock()
+			ck.leader = i
+			ck.mu.Unlock()
+			return rpc.OK
+		}
+		if reply.Err == rpc.ErrVersion {
+			if rpcsSent == 1 {
+				return rpc.ErrVersion
+			}
+			return rpc.ErrMaybe
+		}
+	}
 }
