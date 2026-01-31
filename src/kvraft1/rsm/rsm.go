@@ -1,7 +1,9 @@
 package rsm
 
 import (
+	"reflect"
 	"sync"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
@@ -42,8 +44,11 @@ type RSM struct {
 	applyCh      chan raftapi.ApplyMsg
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
-	// index -> channel to send DoOp result to the waiting Submit
-	pending map[int]chan any
+	// index -> waiter: only send result if applied op matches submitted op
+	pending map[int]struct {
+		ch chan any
+		op Op
+	}
 }
 
 // servers[] contains the ports of the set of
@@ -67,7 +72,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
-		pending:      make(map[int]chan any),
+		pending:      make(map[int]struct{ ch chan any; op Op }),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -81,16 +86,17 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 func (rsm *RSM) applier() {
 	for msg := range rsm.applyCh {
 		if msg.CommandValid {
-			op := msg.Command.(Op)
-			result := rsm.sm.DoOp(op.Req)
+			appliedOp := msg.Command.(Op)
+			result := rsm.sm.DoOp(appliedOp.Req)
 			rsm.mu.Lock()
-			ch, ok := rsm.pending[msg.CommandIndex]
+			entry, ok := rsm.pending[msg.CommandIndex]
 			if ok {
 				delete(rsm.pending, msg.CommandIndex)
 			}
 			rsm.mu.Unlock()
-			if ok {
-				ch <- result
+			// only send result if the applied command is the one this Submit submitted
+			if ok && reflect.DeepEqual(entry.op, appliedOp) {
+				entry.ch <- result
 			}
 		}
 		// SnapshotValid (4C): handle later
@@ -112,19 +118,34 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	op := Op{Req: req}
-	index, _, isLeader := rsm.rf.Start(op)
+	index, startTerm, isLeader := rsm.rf.Start(op)
 	if !isLeader {
 		return rpc.ErrWrongLeader, nil
 	}
 
 	ch := make(chan any, 1)
 	rsm.mu.Lock()
-	rsm.pending[index] = ch
+	rsm.pending[index] = struct{ ch chan any; op Op }{ch, op}
 	rsm.mu.Unlock()
 
-	result := <-ch
+	deadline := time.Now().Add(2 * time.Second)
+waitLoop:
+	for time.Now().Before(deadline) {
+		select {
+		case result := <-ch:
+			rsm.mu.Lock()
+			delete(rsm.pending, index)
+			rsm.mu.Unlock()
+			return rpc.OK, result
+		case <-time.After(50 * time.Millisecond):
+			term, leader := rsm.rf.GetState()
+			if !leader || term != startTerm {
+				break waitLoop
+			}
+		}
+	}
 	rsm.mu.Lock()
 	delete(rsm.pending, index)
 	rsm.mu.Unlock()
-	return rpc.OK, result
+	return rpc.ErrWrongLeader, nil
 }
