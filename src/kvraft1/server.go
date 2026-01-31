@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"sync"
 	"sync/atomic"
 
 	"6.5840/kvraft1/rsm"
@@ -8,25 +9,49 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/tester1"
-
 )
+
+// entry is the value and version stored for each key (no-RSM / state machine state).
+type entry struct {
+	Value   string
+	Version rpc.Tversion
+}
 
 type KVServer struct {
 	me   int
 	dead int32 // set by Kill()
 	rsm  *rsm.RSM
 
-	// Your definitions here.
+	mu   sync.Mutex
+	data map[string]entry // key -> (value, version)
 }
 
-// To type-cast req to the right type, take a look at Go's type switches or type
-// assertions below:
-//
-// https://go.dev/tour/methods/16
-// https://go.dev/tour/methods/15
+// DoOp runs the state-machine operation (Get or Put) on the local kv store.
+// Used both directly (no-RSM) and by RSM when applying a committed op.
 func (kv *KVServer) DoOp(req any) any {
-	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	switch r := req.(type) {
+	case *rpc.GetArgs:
+		e, ok := kv.data[r.Key]
+		if !ok {
+			return &rpc.GetReply{Err: rpc.ErrNoKey}
+		}
+		return &rpc.GetReply{Value: e.Value, Version: e.Version, Err: rpc.OK}
+	case *rpc.PutArgs:
+		currentVer := rpc.Tversion(0)
+		if e, ok := kv.data[r.Key]; ok {
+			currentVer = e.Version
+		}
+		if r.Version != currentVer {
+			return &rpc.PutReply{Err: rpc.ErrVersion}
+		}
+		kv.data[r.Key] = entry{Value: r.Value, Version: currentVer + 1}
+		return &rpc.PutReply{Err: rpc.OK}
+	default:
+		return nil
+	}
 }
 
 func (kv *KVServer) Snapshot() []byte {
@@ -77,9 +102,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	labgob.Register(rpc.PutArgs{})
 	labgob.Register(rpc.GetArgs{})
 
-	kv := &KVServer{me: me}
-
-
+	kv := &KVServer{me: me, data: make(map[string]entry)}
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	// You may need initialization code here.
 	return []tester.IService{kv, kv.rsm.Raft()}
