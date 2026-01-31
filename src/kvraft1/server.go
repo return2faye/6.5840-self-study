@@ -64,15 +64,21 @@ func (kv *KVServer) Restore(data []byte) {
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	// Your code here. Use kv.rsm.Submit() to submit args
-	// You can use go's type casts to turn the any return value
-	// of Submit() into a GetReply: rep.(rpc.GetReply)
+	err, result := kv.rsm.Submit(args)
+	if err == rpc.ErrWrongLeader {
+		reply.Err = err
+		return
+	}
+	*reply = *(result.(*rpc.GetReply))
 }
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	// Your code here. Use kv.rsm.Submit() to submit args
-	// You can use go's type casts to turn the any return value
-	// of Submit() into a PutReply: rep.(rpc.PutReply)
+	err, result := kv.rsm.Submit(args)
+	if err == rpc.ErrWrongLeader {
+		reply.Err = err
+		return
+	}
+	*reply = *(result.(*rpc.PutReply))
 }
 
 // the tester calls Kill() when a KVServer instance won't
