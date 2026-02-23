@@ -1,6 +1,8 @@
 package kvraft
 
 import (
+	"bytes"
+	"log"
 	"sync"
 	"sync/atomic"
 
@@ -33,12 +35,28 @@ func (kv *KVServer) DoOp(req any) any {
 	defer kv.mu.Unlock()
 
 	switch r := req.(type) {
+	case rpc.GetArgs:
+		e, ok := kv.data[r.Key]
+		if !ok {
+			return &rpc.GetReply{Err: rpc.ErrNoKey}
+		}
+		return &rpc.GetReply{Value: e.Value, Version: e.Version, Err: rpc.OK}
 	case *rpc.GetArgs:
 		e, ok := kv.data[r.Key]
 		if !ok {
 			return &rpc.GetReply{Err: rpc.ErrNoKey}
 		}
 		return &rpc.GetReply{Value: e.Value, Version: e.Version, Err: rpc.OK}
+	case rpc.PutArgs:
+		currentVer := rpc.Tversion(0)
+		if e, ok := kv.data[r.Key]; ok {
+			currentVer = e.Version
+		}
+		if r.Version != currentVer {
+			return &rpc.PutReply{Err: rpc.ErrVersion}
+		}
+		kv.data[r.Key] = entry{Value: r.Value, Version: currentVer + 1}
+		return &rpc.PutReply{Err: rpc.OK}
 	case *rpc.PutArgs:
 		currentVer := rpc.Tversion(0)
 		if e, ok := kv.data[r.Key]; ok {
@@ -55,12 +73,32 @@ func (kv *KVServer) DoOp(req any) any {
 }
 
 func (kv *KVServer) Snapshot() []byte {
-	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(kv.data) != nil {
+		log.Fatalf("kvserver %d: failed to encode snapshot", kv.me)
+	}
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
-	// Your code here
+	if len(data) == 0 {
+		return
+	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	restored := make(map[string]entry)
+	if d.Decode(&restored) != nil {
+		log.Fatalf("kvserver %d: failed to decode snapshot", kv.me)
+	}
+
+	kv.mu.Lock()
+	kv.data = restored
+	kv.mu.Unlock()
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {

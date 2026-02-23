@@ -13,15 +13,13 @@ import (
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
 
-
 // Op is the command replicated through Raft. Req is the actual operation
 // (e.g. Inc{}, Null{}) that the state machine will execute in DoOp(Req).
 type Op struct {
-	Id int
+	Id  int
 	Req any // the request to execute; must be a registered labgob type
-	Me int
+	Me  int
 }
-
 
 // A server (i.e., ../server.go) that wants to replicate itself calls
 // MakeRSM and must implement the StateMachine interface.  This
@@ -71,10 +69,16 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
-		pending:      make(map[int]struct{ ch chan any; op Op }),
+		pending: make(map[int]struct {
+			ch chan any
+			op Op
+		}),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
+	}
+	if snapshot := persister.ReadSnapshot(); len(snapshot) > 0 {
+		rsm.sm.Restore(snapshot)
 	}
 	go rsm.applier()
 	return rsm
@@ -87,6 +91,9 @@ func (rsm *RSM) applier() {
 		if msg.CommandValid {
 			appliedOp := msg.Command.(Op)
 			result := rsm.sm.DoOp(appliedOp.Req)
+			if rsm.maxraftstate != -1 && rsm.rf.PersistBytes() >= rsm.maxraftstate {
+				rsm.rf.Snapshot(msg.CommandIndex, rsm.sm.Snapshot())
+			}
 			rsm.mu.Lock()
 			entry, ok := rsm.pending[msg.CommandIndex]
 			if ok {
@@ -97,15 +104,17 @@ func (rsm *RSM) applier() {
 			if ok && entry.op.Id == appliedOp.Id && entry.op.Me == appliedOp.Me {
 				entry.ch <- result
 			}
+			continue
 		}
-		// SnapshotValid (4C): handle later
+		if msg.SnapshotValid {
+			rsm.sm.Restore(msg.Snapshot)
+		}
 	}
 }
 
 func (rsm *RSM) Raft() raftapi.Raft {
 	return rsm.rf
 }
-
 
 // Submit a command to Raft, and wait for it to be committed.  It
 // should return ErrWrongLeader if client should find new leader and
@@ -125,7 +134,10 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 	ch := make(chan any, 1)
 	rsm.mu.Lock()
-	rsm.pending[index] = struct{ ch chan any; op Op }{ch, op}
+	rsm.pending[index] = struct {
+		ch chan any
+		op Op
+	}{ch, op}
 	rsm.mu.Unlock()
 
 	deadline := time.Now().Add(2 * time.Second)

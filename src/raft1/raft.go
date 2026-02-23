@@ -57,6 +57,8 @@ type Raft struct {
 	MatchIndex []int
 
 	applyCh chan raftapi.ApplyMsg
+	// notify leader replication loop to send AppendEntries immediately
+	replicateCh chan struct{}
 }
 
 // return currentTerm and whether this server
@@ -509,6 +511,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.MatchIndex[rf.me] = index
 
 	rf.persist()
+	select {
+	case rf.replicateCh <- struct{}{}:
+	default:
+	}
 
 	return index, term, true
 }
@@ -804,7 +810,10 @@ func (rf *Raft) becomeLeader() {
 			}(i)
 		}
 
-		time.Sleep(time.Duration(100) * time.Millisecond)
+		select {
+		case <-rf.replicateCh:
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 
@@ -879,6 +888,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.applyCh = applyCh
+	rf.replicateCh = make(chan struct{}, 1)
 
 	// Your initialization code here (3A, 3B, 3C).
 	// 300ms - 400ms
